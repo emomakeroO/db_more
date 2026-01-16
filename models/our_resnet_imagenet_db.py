@@ -5,7 +5,6 @@ import torch.nn.functional as F
 from torchvision.models.resnet import Bottleneck, ResNet
 
 
-# --- 1. 复用 DynamicBiasNetwork (保持不变) ---
 class DynamicBiasNetwork(nn.Module):
     def __init__(self, num_classes, hidden_dim=64):
         super(DynamicBiasNetwork, self).__init__()
@@ -25,7 +24,6 @@ class DynamicBiasNetwork(nn.Module):
         return bias
 
 
-# --- 2. 适配 ImageNet 的 Decoder ---
 class DecoderImageNet(nn.Module):
     def __init__(self, input_dim=2048):
         super(DecoderImageNet, self).__init__()
@@ -65,12 +63,7 @@ class ResNet50AE(ResNet):
     def __init__(self, num_classes=1000, class_freq=None,
                  recon_weight=1.0, sparse_weight=0.01, dcb_weight=0.1,
                  alpha=1.0, beta=1.0, gamma=1.0, **kwargs):
-
-        # 初始化标准 ResNet50 骨干
-        # layers=[3, 4, 6, 3] 对应 ResNet50
         super(ResNet50AE, self).__init__(Bottleneck, [3, 4, 6, 3], num_classes=num_classes, **kwargs)
-
-        # --- DB-MoRE 参数 ---
         self.feat_dim = 2048  # ResNet50 layer4 output channels
         self.num_classes = num_classes
         self.recon_weight = recon_weight
@@ -80,30 +73,24 @@ class ResNet50AE(ResNet):
         self.beta = beta
         self.gamma = gamma
 
-        # 类别频率处理
         if class_freq is not None:
             probs = torch.tensor(class_freq, dtype=torch.float32)
             self.class_probs = probs / probs.sum()
         else:
             self.class_probs = None
 
-        # --- DB-MoRE 模块 ---
-        # 1. 替换原有 fc 为适配层 (虽然 ResNet 自带 fc，但我们显式定义更清晰)
         self.fc = nn.Linear(self.feat_dim, num_classes)
 
-        # 2. 专家解码器 (针对 ImageNet 适配)
         self.decoder0 = DecoderImageNet(input_dim=self.feat_dim)
         self.decoder1 = DecoderImageNet(input_dim=self.feat_dim)
         self.decoder2 = DecoderImageNet(input_dim=self.feat_dim)
 
-        # 3. 门控网络
         self.gate = nn.Sequential(
             nn.Linear(self.feat_dim, 512), nn.ReLU(),  # 稍微加大隐层
             nn.Linear(512, 128), nn.ReLU(),
             nn.Linear(128, 3)
         )
 
-        # 4. DCB 网络
         self.bias_net = DynamicBiasNetwork(num_classes)
 
     def compute_dcb_loss(self, device):
@@ -116,14 +103,12 @@ class ResNet50AE(ResNet):
 
         class_probs = self.class_probs.to(device)
 
-        # 严格对应文本公式 (带 log)
         prob_bias = torch.sigmoid(avg_bias)
         dcb_loss = torch.sum(class_probs * torch.log(prob_bias + 1e-6))
 
         return dcb_loss
 
     def forward_features(self, x):
-        # 标准 ResNet 前向流程，直到 layer4
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
@@ -152,7 +137,6 @@ class ResNet50AE(ResNet):
             # Logit Adjustment: f(x) + eta * b(y)
             logits = logits + self.gamma * all_biases
 
-        # --- 2. MoRE Reconstruction ---
         gate_logits = self.gate(p4)
 
         rec0 = self.decoder0(h4)
@@ -182,7 +166,6 @@ class ResNet50AE(ResNet):
 
         weights = F.softmax(final_gate_logits, dim=1)
 
-        # 加权融合
         w_expanded = weights.unsqueeze(2).unsqueeze(3).unsqueeze(4)
         recs = torch.stack([rec0, rec1, rec2], dim=1)
         rec_final = (w_expanded * recs).sum(dim=1)
@@ -200,7 +183,6 @@ class ResNet50AE(ResNet):
         return logits, recon_loss, gate_loss, dcb_reg_loss
 
 
-# 实例化函数
 def ResNet50DBMoRE(num_classes=1000, class_freq=None, **kwargs):
     return ResNet50AE(num_classes=num_classes, class_freq=class_freq, **kwargs)
 
