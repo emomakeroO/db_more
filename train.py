@@ -11,7 +11,7 @@ from models.our_resnet_imagenet import ResNet50
 from datasets.ImbalanceCIFAR import IMBALANCECIFAR10, IMBALANCECIFAR100
 from datasets.ImbalanceImageNet import LT_Dataset
 from datasets.tinyimages_300k import TinyImages
-from models.our_resnete import ResNet18AE, ResNet34AE
+from models.our_resnete_db import ResNet18AE, ResNet34AE
 from models.our_resnet_imagenet import ResNet50AE
 
 from utils.utils import *
