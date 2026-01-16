@@ -15,7 +15,7 @@ import torchvision.transforms as transforms
 
 from datasets.ImbalanceCIFAR import IMBALANCECIFAR10, IMBALANCECIFAR100
 from datasets.SCOODBenchmarkDataset import SCOODDataset
-from models.our_resnet import ResNet18, ResNet34
+from models.our_resnet_db import ResNet18, ResNet34
 
 from utils.utils import *
 from utils.ltr_metrics import *
