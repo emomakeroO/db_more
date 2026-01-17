@@ -371,7 +371,7 @@ def train(gpu_id, ngpus_per_node, args):
             lt_loss2 = F.cross_entropy(all_logits2[:2 * N_in], in_labels) + \
                        args.Lambda0 * F.cross_entropy(all_logits2[2 * N_in:],
                                                       torch.cat([tail_labels, ood_tail_labels], dim=0))
-            loss = lt_loss0 + lt_loss1 + lt_loss2 + 1 * recon_loss + g_loss + dcb_loss
+            loss = lt_loss0 + lt_loss1 + lt_loss2 + 0.5 * recon_loss + g_loss + 0.5 * dcb_loss
 
             # backward:
             optimizer.zero_grad()
