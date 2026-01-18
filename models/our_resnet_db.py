@@ -38,32 +38,28 @@ class Decoder(nn.Module):
         x = self.deconv4(x)
         return x
 
-
 class DynamicBiasNetwork(nn.Module):
-    """
-    """
-    def __init__(self, num_classes, hidden_dim=64):
+    def __init__(self, num_classes, hidden_dim=64, num_experts=3):
         super(DynamicBiasNetwork, self).__init__()
         self.num_classes = num_classes
         self.class_embed = nn.Embedding(num_classes, hidden_dim)
-
+        
         self.bias_mlp = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.ReLU(),
-            nn.Linear(hidden_dim // 2, 3)  # 输出3个专家的 Bias
+            nn.Linear(hidden_dim // 2, num_experts) 
         )
         nn.init.xavier_uniform_(self.class_embed.weight)
 
     def forward(self, class_idx):
         class_emb = self.class_embed(class_idx)
-        bias = self.bias_mlp(class_emb)  # [B, 3]
+        bias = self.bias_mlp(class_emb)  # [B, num_experts]
         return bias
-
 
 class ResNetAE(nn.Module):
     def __init__(self, block, num_blocks, num_classes=10, pooling='avgpool',
                  norm=nn.BatchNorm2d, recon_weight=1.0, class_freq=None, sparse_weight=0.01,
-                 dcb_weight=0.1, alpha=1.0, beta=1.0, gamma=1.0):
+                 dcb_weight=0.1, alpha=1.0, beta=1.0, eta=1.0):
         super(ResNetAE, self).__init__()
 
         self.in_planes = 64
@@ -71,9 +67,11 @@ class ResNetAE(nn.Module):
         self.recon_weight = recon_weight
         self.sparse_weight = sparse_weight
         self.dcb_weight = dcb_weight
-        self.alpha = alpha
-        self.beta = beta
-        self.gamma = gamma
+        
+        # Hyper-parameters
+        self.alpha = alpha 
+        self.beta = beta   
+        self.eta = eta     
 
         if class_freq is not None:
             probs = torch.tensor(class_freq, dtype=torch.float32)
@@ -93,8 +91,9 @@ class ResNetAE(nn.Module):
         self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=2, norm=norm)
         self.layer4 = self._make_layer(block, 512, num_blocks[3], stride=2, norm=norm)
         self.feat_dim = 512 * block.expansion
+        
         self.classifier = nn.Linear(self.feat_dim, num_classes)
-                     
+        
         self.decoder0 = Decoder(input_dim=self.feat_dim)
         self.decoder1 = Decoder(input_dim=self.feat_dim)
         self.decoder2 = Decoder(input_dim=self.feat_dim)
@@ -102,10 +101,10 @@ class ResNetAE(nn.Module):
         self.gate = nn.Sequential(
             nn.Linear(self.feat_dim, 256), nn.ReLU(),
             nn.Linear(256, 128), nn.ReLU(),
-            nn.Linear(128, 3)
+            nn.Linear(128, 3) # 3 Experts
         )
 
-        self.bias_net = DynamicBiasNetwork(num_classes)
+        self.bias_net = DynamicBiasNetwork(num_classes, num_experts=3)
 
     def _make_layer(self, block, planes, num_blocks, norm, stride):
         strides = [stride] + [1] * (num_blocks - 1)
@@ -122,14 +121,15 @@ class ResNetAE(nn.Module):
             return torch.tensor(0.0).to(device)
 
         all_classes = torch.arange(self.num_classes).to(device)
-        # 获取所有类别的 Bias, 并取3个专家的均值作为该类的 scalar bias
-        all_biases = self.bias_net(all_classes)
-        avg_bias = all_biases.mean(dim=1)
+        all_biases_vec = self.bias_net(all_classes) # [K, 3]
+        scalar_bias = all_biases_vec.mean(dim=1) # [K]
 
         class_probs = self.class_probs.to(device)
+        weight = 1.0 - class_probs
+        
+        prob_bias = torch.sigmoid(scalar_bias)
 
-        prob_bias = torch.sigmoid(avg_bias)
-        dcb_loss = torch.sum(class_probs * torch.log(prob_bias + 1e-6))
+        dcb_loss = torch.sum(-torch.log(prob_bias + 1e-6) * weight)
 
         return dcb_loss
 
@@ -143,19 +143,19 @@ class ResNetAE(nn.Module):
         p4 = p4.view(p4.size(0), -1)
         return p4, h4
 
-    def forward(self, x, class_idx=None):
+    def forward(self, x, labels=None):
+        """
+        """
         p4, h4 = self.forward_features(x)
         device = x.device
-
-        # --- 1. Bias-aware Classification (对应文本 Eq. 1 的第一部分) ---
         logits = self.classifier(p4)
+        all_classes = torch.arange(self.num_classes).to(device)
+        all_biases_vec = self.bias_net(all_classes)
+        all_scalar_biases = all_biases_vec.mean(dim=1) # [K]
 
-        if self.training:
-            all_classes = torch.arange(self.num_classes).to(device)
-            all_biases = self.bias_net(all_classes).mean(dim=1)
-            logits = logits + self.gamma * all_biases
+        final_logits = logits + self.eta * all_scalar_biases
 
-        gate_logits = self.gate(p4)
+        base_gate_logits = self.gate(p4) # [B, 3]
 
         rec0 = self.decoder0(h4)
         rec1 = self.decoder1(h4)
@@ -165,23 +165,21 @@ class ResNetAE(nn.Module):
         loss_rec1 = F.mse_loss(rec1, x, reduction='none').mean(dim=[1, 2, 3])
         loss_rec2 = F.mse_loss(rec2, x, reduction='none').mean(dim=[1, 2, 3])
 
-        # Quality Score
-        q0 = -torch.log(loss_rec0 + 1e-8)
-        q1 = -torch.log(loss_rec1 + 1e-8)
-        q2 = -torch.log(loss_rec2 + 1e-8)
-        quality_logits = torch.stack([q0, q1, q2], dim=1)
+        q0 = -torch.log(loss_rec0 + 1e-6)
+        q1 = -torch.log(loss_rec1 + 1e-6)
+        q2 = -torch.log(loss_rec2 + 1e-6)
+        quality_logits = torch.stack([q0, q1, q2], dim=1) # [B, 3]
 
-        # Routing Bias
-        if class_idx is not None:
-            bias_logits = self.bias_net(class_idx)
+        if labels is not None:
+            bias_logits = self.bias_net(labels)
         else:
-            bias_logits = torch.zeros_like(gate_logits)
+            bias_logits = torch.zeros_like(base_gate_logits)
+            
+        total_routing_logits = (self.alpha * base_gate_logits +
+                                self.beta * quality_logits +
+                                self.eta * bias_logits)
 
-        final_gate_logits = (self.alpha * gate_logits +
-                             self.beta * quality_logits +
-                             self.gamma * bias_logits)
-
-        weights = F.softmax(final_gate_logits, dim=1)
+        weights = F.softmax(total_routing_logits, dim=1) # [B, 3]
 
         w_expanded = weights.unsqueeze(2).unsqueeze(3).unsqueeze(4)
         recs = torch.stack([rec0, rec1, rec2], dim=1)
@@ -196,11 +194,10 @@ class ResNetAE(nn.Module):
 
         dcb_reg_loss = self.compute_dcb_loss(device) * self.dcb_weight
 
-        return logits, recon_loss, gate_loss, dcb_reg_loss
+        return final_logits, recon_loss, gate_loss, dcb_reg_loss
         
 def ResNet18AE(num_classes, class_freq, **kwargs):
     return ResNetAE(BasicBlock, [2, 2, 2, 2], num_classes=num_classes, class_freq=class_freq, **kwargs)
-
 
 def ResNet34AE(num_classes, class_freq, **kwargs):
     return ResNetAE(BasicBlock, [3, 4, 6, 3], num_classes=num_classes, class_freq=class_freq, **kwargs)
