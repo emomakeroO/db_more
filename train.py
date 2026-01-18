@@ -400,7 +400,6 @@ def train(gpu_id, ngpus_per_node, args):
                 for data, labels in test_loader:
                     data, labels = data.to(device), labels.to(device)
                     logits0, logits1, logits2, _ = model(data)
-                    # 使用 softmax 函数计算每个 logits 的概率分布，然后将它们合并（相加）得到最终的预测概率分布：
                     pred_all = F.softmax(logits0, dim=1)
                     pred_med_tail = F.softmax(logits1, dim=1)
                     pred_tail = F.softmax(logits2, dim=1)
@@ -408,7 +407,7 @@ def train(gpu_id, ngpus_per_node, args):
                     all_pred = pred_all + pred_med_tail + pred_tail
                     # all_pred = logits0 + logits1 + logits2
                     # +logits1 +logits2
-                    pred = all_pred[:, odc:].argmax(dim=1, keepdim=True)  # get the index of the max log-probability
+                    pred = all_pred[:, odc:].argmax(dim=1, keepdim=True)
                     pred0 = logits0[:, odc:].argmax(dim=1, keepdim=True)
                     pred1 = logits1[:, odc:].argmax(dim=1, keepdim=True)
                     pred2 = logits2[:, odc:].argmax(dim=1, keepdim=True)
