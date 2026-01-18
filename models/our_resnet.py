@@ -70,17 +70,14 @@ class ResNetAE(nn.Module):
         self.decoder1 = Decoder()
         self.decoder2 = Decoder()
 
-        # 新增参数
-        self.class_freq = class_freq  # 类别频率向量 [num_classes]
+        self.class_freq = class_freq  
         self.recon_weight = recon_weight
-        # 频率嵌入层
         if class_freq is not None:
             self.freq_embed = nn.Embedding(len(class_freq), 512)
-            gate_input_dim = 512 + 64  # 增加输入维度
+            gate_input_dim = 512 + 64  
         else:
             gate_input_dim = 512
 
-        # 修改门控网络
         self.gate = nn.Sequential(
             nn.Linear(gate_input_dim, 256),
             nn.ReLU(),
@@ -116,42 +113,27 @@ class ResNetAE(nn.Module):
     def forward(self, x, class_idx=None):
         p4, h4 = self.forward_features(x)
 
-        # 计算分类器的输出
         logits0, logits1, logits2 = self.forward_classifier(p4)
 
-        # 准备门控输入
         gate_input = p4
 
-        # 添加频率信息
         if hasattr(self, 'freq_embed') and class_idx is not None:
-            # 获取频率嵌入
             freq_emb = self.freq_embed(class_idx)
-            # 拼接特征和频率嵌入
             gate_input = torch.cat([gate_input, freq_emb], dim=1)
 
-        # 计算门控权重
         gate_weights = F.softmax(self.gate(gate_input), dim=1)
-
-        # 频率加权（如果提供了类别频率）
         if class_idx is not None and self.class_freq is not None:
-            # 计算频率权重因子（低频类权重更大）
             freq_weight = torch.sqrt(1.0 / (self.class_freq[class_idx] + 1e-8))
-            # 应用频率权重
             gate_weights = gate_weights * freq_weight.unsqueeze(1)
-            # 重新归一化
             gate_weights = F.normalize(gate_weights, p=1, dim=1)
-
-        # 计算解码器的输出
         reconstructed0 = self.decoder0(h4)
         reconstructed1 = self.decoder1(h4)
         reconstructed2 = self.decoder2(h4)
-
-        # 加权重构输出
+        
         expanded_weights = gate_weights.unsqueeze(2).unsqueeze(3).unsqueeze(4)
         reconstructions = torch.stack([reconstructed0, reconstructed1, reconstructed2], dim=1)
         reconstructed = (expanded_weights * reconstructions).sum(dim=1)
 
-        # 计算重构损失
         recon_loss = F.mse_loss(reconstructed, x) * self.recon_weight
 
         return logits0, logits1, logits2, recon_loss
