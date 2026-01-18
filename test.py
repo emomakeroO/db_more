@@ -15,7 +15,7 @@ import torchvision.transforms as transforms
 
 from datasets.ImbalanceCIFAR import IMBALANCECIFAR10, IMBALANCECIFAR100
 from datasets.SCOODBenchmarkDataset import SCOODDataset
-from models.our_resnet_db import ResNet18, ResNet34
+from models.our_resnet import ResNet18, ResNet34
 
 from utils.utils import *
 from utils.ltr_metrics import *
@@ -78,7 +78,7 @@ def fpr_and_fdr_at_recall(y_true, y_score, recall_level=0.95, pos_label=None):
 
     cutoff = np.argmin(np.abs(recall - recall_level))
 
-    return fps[cutoff] / (np.sum(np.logical_not(y_true)))   # , fps[cutoff]/(fps[cutoff] + tps[cutoff])
+    return fps[cutoff] / (np.sum(np.logical_not(y_true)))   
 
 def get_measures(_pos, _neg, recall_level=0.95):
     pos = np.array(_pos[:]).reshape((-1, 1))
